@@ -3,6 +3,7 @@ from tkinter import ttk
 from pydub import AudioSegment
 import pygame
 import os
+from piano_roll import PianoRollCanvas
 
 # ==== CONFIG ====
 SOUNDS_DIR = "sounds"
@@ -14,7 +15,7 @@ pygame.mixer.init()
 
 # ==== STATE ====
 class TrackRow:
-    def __init__(self, parent, index, remove_callback):
+    def __init__(self, parent, index, remove_callback, small_pixel):
         self.index = index
         self.folder_var = tk.StringVar()
         self.file_var = tk.StringVar()
@@ -24,7 +25,6 @@ class TrackRow:
         self.frame = tk.Frame(parent)
         self.frame.grid(row=index, column=0, sticky="w")
 
-        # Folder/File Dropdowns
         self.folder_dropdown = ttk.Combobox(self.frame, textvariable=self.folder_var, values=self.get_folders(), width=10, state="readonly")
         self.folder_dropdown.grid(row=0, column=0)
 
@@ -40,14 +40,14 @@ class TrackRow:
         self.remove_button = tk.Button(self.frame, text="X", command=lambda: remove_callback(self), bg="salmon")
         self.remove_button.grid(row=0, column=3, padx=5)
 
-        # Step buttons
         self.step_frame = tk.Frame(self.frame)
         self.step_frame.grid(row=0, column=4, padx=5)
         for col in range(STEPS):
             base_color = "white" if (col // 4) % 2 == 0 else "lightgray"
-            btn = tk.Button(self.step_frame, width=1, height=2, bg=base_color,
+            btn = tk.Button(self.step_frame, image=small_pixel, bg=base_color,
                             command=lambda c=col: self.toggle_step(c))
-            btn.grid(row=0, column=col, padx=1)
+            btn.image = small_pixel
+            btn.grid(row=0, column=col, padx=0, pady=0, ipadx=0, ipady=0)
             self.buttons.append(btn)
 
     def get_folders(self):
@@ -67,17 +67,16 @@ class TrackRow:
     def update_button_color(self, col, highlight=False):
         is_muted = self.mute_var.get()
         filled = self.grid[col] == 1
+        base_color = "white" if (col // 4) % 2 == 0 else "lightgray"
 
         if is_muted:
-            # Black and white theme for muted
-            color = "black" if filled else ("white" if (col // 4) % 2 == 0 else "lightgray")
+            color = "black" if filled else base_color
         else:
-            # Normal color theme
-            color = "green" if filled else ("white" if (col // 4) % 2 == 0 else "lightgray")
+            color = "green" if filled else base_color
 
         if highlight:
             if is_muted:
-                color = "#505050" if filled else "#B0B0B0"  # slightly different to indicate highlight
+                color = "#505050" if filled else "#B0B0B0"
             else:
                 color = "#00FF00" if filled else "#686464"
 
@@ -103,6 +102,8 @@ class SequencerApp:
         self.playback_after_id = None
         self.is_playing = False
 
+        self.small_pixel = tk.PhotoImage(width=20, height=40)
+
         self.bpm_label = tk.Label(root, text="BPM:")
         self.bpm_label.grid(row=0, column=0)
         self.bpm_entry = tk.Entry(root, width=5)
@@ -110,18 +111,44 @@ class SequencerApp:
         self.bpm_entry.grid(row=0, column=1)
 
         tk.Button(root, text="Add Row", command=self.add_row).grid(row=0, column=2)
-        tk.Button(root, text="Play", command=self.play_sequence, bg="lightgreen").grid(row=0, column=3)
-        tk.Button(root, text="Stop", command=self.stop_playback, bg="salmon").grid(row=0, column=4)
-        tk.Button(root, text="Export", command=self.show_export_dialog, bg="lightblue").grid(row=0, column=5)
+
+        self.play_toggle_btn = tk.Button(root, text="Play", command=self.toggle_playback, bg="lightgreen")
+        self.play_toggle_btn.grid(row=0, column=3)
+
+        tk.Button(root, text="Export", command=self.show_export_dialog, bg="lightblue").grid(row=0, column=4)
+
+        self.toggle_piano_button = tk.Button(root, text="Toggle Piano Roll", command=self.toggle_piano_roll, bg="lavender")
+        self.toggle_piano_button.grid(row=0, column=5)
 
         self.track_frame = tk.Frame(root)
         self.track_frame.grid(row=1, column=0, columnspan=6, pady=10)
 
+        self.piano_visible = False
+        self.piano_roll_frame = tk.Frame(root)
+        self.piano_roll = PianoRollCanvas(self.piano_roll_frame, steps=STEPS)
+        self.piano_roll.pack()
+
         self.add_row()
+
+    def toggle_playback(self):
+        if self.is_playing:
+            self.stop_playback()
+            self.play_toggle_btn.configure(text="Play", bg="lightgreen")
+        else:
+            self.play_sequence()
+            self.play_toggle_btn.configure(text="Stop", bg="salmon")
+
+    def toggle_piano_roll(self):
+        if self.piano_visible:
+            self.piano_roll_frame.grid_forget()
+            self.piano_visible = False
+        else:
+            self.piano_roll_frame.grid(row=2, column=0, columnspan=6)
+            self.piano_visible = True
 
     def add_row(self):
         index = len(self.track_rows)
-        row = TrackRow(self.track_frame, index, self.remove_row)
+        row = TrackRow(self.track_frame, index, self.remove_row, self.small_pixel)
         self.track_rows.append(row)
 
     def remove_row(self, row):
@@ -188,6 +215,7 @@ class SequencerApp:
             for row in self.track_rows:
                 for col in range(STEPS):
                     row.highlight_column(col, highlight=False)
+            self.play_toggle_btn.configure(text="Play", bg="lightgreen")
 
     def show_export_dialog(self):
         dialog = tk.Toplevel(self.root)
@@ -252,5 +280,6 @@ class SequencerApp:
 # ==== RUN ====
 if __name__ == "__main__":
     root = tk.Tk()
+    root.geometry("2400x1200")
     app = SequencerApp(root)
     root.mainloop()

@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk
 import os
+import io
 import pygame
 from draggable_panel import DraggablePanel
 from piano_roll import PianoRollCanvas
@@ -9,7 +10,24 @@ SOUNDS_DIR = "sounds"
 STEPS = 64
 DEFAULT_BPM = 120
 
-pygame.mixer.init()
+# ---- Init pygame with typical wav parameters ----
+pygame.mixer.init(frequency=44100, size=-16, channels=2)
+
+from pydub import AudioSegment
+
+# --- Utility for mapping note number to synth file name ---
+def midi_to_note_name(midi_num):
+    # midi_num: int, 21 (A0) to 108 (C8)
+    names = ['c', 'c#', 'd', 'd#', 'e', 'f', 'f#', 'g', 'g#', 'a', 'a#', 'b']
+    note = names[midi_num % 12]
+    octave = midi_num // 12 - 1
+    return f"{note}{octave}".lower()  # always lower
+
+def synth_sample_path(midi_num, synth_folder="synth"):
+    note_name = midi_to_note_name(midi_num)
+    fname = f"{note_name}.wav"
+    fullpath = os.path.join(SOUNDS_DIR, synth_folder, fname)
+    return fullpath
 
 class TrackRow:
     def __init__(self, parent, index, remove_callback, piano_roll_callback, cell_width=20, cell_height=20, steps=64):
@@ -49,6 +67,18 @@ class TrackRow:
         self.file_dropdown = ttk.Combobox(
             self.frame, textvariable=self.file_var, values=[], width=10, state="readonly", style="TCombobox")
         self.file_dropdown.grid(row=0, column=2, padx=(2,2))
+
+        self.file_placeholder = ttk.Combobox(
+            self.frame,
+            values=["(by note)"],
+            state="disabled",
+            width=10,  # Match the width of self.file_dropdown for perfect size
+            style="TCombobox"
+        )
+        self.file_placeholder.set("(by note)")
+        self.file_placeholder.grid(row=0, column=2, padx=(2,2))
+        self.file_placeholder.grid_remove()
+
 
         folders = self.get_folders()
         if folders:
@@ -100,12 +130,25 @@ class TrackRow:
             self.file_var.set(files[0])
 
     def on_instrument_change(self, *args):
-        if self.instrument_var.get() == "Drum Pad":
+        instrument = self.instrument_var.get()
+        if instrument == "Drum Pad":
             self.is_piano_roll = False
             self.piano_roll_button.config(state="disabled", bg="#18191b", fg="#888", cursor="X_cursor")
-        else:
+            self.folder_dropdown.grid()
+            self.file_dropdown.grid()
+            self.file_placeholder.grid_remove()
+            self.update_file_list()
+        else:  # "Piano Roll"
             self.is_piano_roll = True
             self.piano_roll_button.config(state="normal", bg="#25292c", fg="#fff", cursor="")
+            self.folder_dropdown.grid()
+            self.file_dropdown.grid_remove()
+            self.file_placeholder.grid()
+            # Optional: force folder to "synth" if present
+            folders = self.get_folders()
+            if "synth" in folders:
+                self.folder_var.set("synth")
+                self.folder_dropdown["values"] = ["synth"]
         self.draw_grid()
 
     def draw_grid(self):
@@ -239,7 +282,7 @@ class SequencerApp:
             return
 
         panel = DraggablePanel(
-            self.root, title=f"Piano Roll: {row.folder_var.get()} {row.file_var.get()}",
+            self.root, title=f"Piano Roll: {row.folder_var.get()}",
             x=120 + row.index*40, y=290 + row.index*40, width=900, height=350,
             min_width=600, min_height=120,
         )
@@ -286,35 +329,76 @@ class SequencerApp:
             print("Invalid BPM")
             return
         beat_duration_ms = int(60000 / bpm / 2)
+
+        # --- SYNC PIANO ROLL NOTES ---
+        # Make sure we copy the latest edits from any open piano roll windows
+        for row, panel in self.pr_panels.items():
+            if hasattr(panel, 'pr_canvas') and panel.pr_canvas:
+                row.piano_roll_notes = [dict(n) for n in panel.pr_canvas.notes_list]
+
         self.sounds = []
+        self.pr_note_cache = []
         for row in self.track_rows:
             # Only load sound for drum pad rows
             if row.is_piano_roll:
                 self.sounds.append(None)
+                self.pr_note_cache.append([dict(n) for n in row.piano_roll_notes])
             else:
                 path = os.path.join(SOUNDS_DIR, row.folder_var.get(), row.file_var.get())
                 try:
                     self.sounds.append(pygame.mixer.Sound(path))
-                except:
+                except Exception as e:
+                    print(f"Failed to load sound: {path}. Error: {e}")
                     self.sounds.append(None)
+                self.pr_note_cache.append(None)
         self.is_playing = True
 
         def step(col=0):
-            if not self.is_playing:
-                for row in self.track_rows:
-                    if not row.is_piano_roll:
-                        row.clear_highlight()
-                return
-
-            for row_index in range(min(len(self.track_rows), len(self.sounds))):
-                row = self.track_rows[row_index]
+            for row_index, row in enumerate(self.track_rows):
                 if row.is_piano_roll:
-                    continue
-                row.highlight_column(col)
-                if row.grid[col] and not row.mute_var.get():
-                    sound = self.sounds[row_index]
-                    if sound:
-                        sound.play()
+                    notes = self.pr_note_cache[row_index]
+                    for note in notes:
+                        if note['start'] == col and not row.mute_var.get():
+                            steps_long = note['end'] - note['start'] + 1
+                            ms_long = steps_long * beat_duration_ms
+                            midi_num = 108 - note['row']
+                            folder = row.folder_var.get()
+                            sample_path = synth_sample_path(midi_num, folder)
+                            if not os.path.isfile(sample_path):
+                                print(f"  File does not exist: {sample_path}")
+                                continue
+                            try:
+                                seg = AudioSegment.from_file(sample_path)
+                            except Exception as e:
+                                print(f"  Couldn't load {sample_path}: {e}")
+                                continue
+                            if len(seg) > ms_long:
+                                note_sound = seg[:ms_long].fade_out(25)  # 25ms fade-out to avoid clicks
+                            else:
+                                note_sound = seg  # Full note if shorter
+
+                            buf = io.BytesIO()
+                            note_sound.export(buf, format="wav")
+                            buf.seek(0)
+                            sample = pygame.mixer.Sound(file=buf)
+                            sample.play()
+                            buf = io.BytesIO()
+                            note_sound.export(buf, format="wav")
+                            buf.seek(0)
+                            try:
+                                sample = pygame.mixer.Sound(file=buf)
+                                sample.play()
+                            except Exception as e:
+                                print(f"  Playback failed: {e}")
+                else:
+                    row.highlight_column(col)
+                    if row.grid[col] and not row.mute_var.get():
+                        sound = self.sounds[row_index]
+                        if sound:
+                            sound.play()
+                if hasattr(row, "pr_panel") and row.pr_panel and hasattr(row.pr_panel, "pr_canvas"):
+                    row.pr_panel.pr_canvas.set_playhead(col)  # You need to add this method below!
+
             next_col = (col + 1) % STEPS
             self.playback_after_id = self.root.after(beat_duration_ms, lambda: step(next_col))
         step()

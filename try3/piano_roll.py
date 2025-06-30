@@ -1,10 +1,9 @@
 import tkinter as tk
-import time
 
 class PianoRollCanvas(tk.Canvas):
     def __init__(self, master, steps=64, cell_width=24, cell_height=24, sidebar_width=96, beat_offset=0):
         self.steps = steps
-        self.notes_total = 88  # Full piano: A0 (MIDI 21) to C8 (MIDI 108)
+        self.notes_total = 88  # A0 (MIDI 21) to C8 (MIDI 108)
         self.cell_width = cell_width
         self.cell_height = cell_height
         self.sidebar_width = sidebar_width + beat_offset * cell_width
@@ -14,7 +13,6 @@ class PianoRollCanvas(tk.Canvas):
 
         total_width = self.sidebar_width + steps * cell_width
         total_height = 24 * cell_height
-
         super().__init__(master, width=total_width, height=total_height, bg="#18191b", highlightthickness=0)
 
         self.notes_list = []
@@ -23,22 +21,21 @@ class PianoRollCanvas(tk.Canvas):
         self.drag_edge = None
 
         self.highlighted_col = None
+        self.playhead_col = None  # New
         self._has_focus = False
 
-        # --- Playhead line ---
-        self.playhead_x = None
-
-        # Mousewheel, mouse, drag, and resize bindings...
         self.bind("<Enter>", self._on_mouse_enter)
         self.bind("<Leave>", self._on_mouse_leave)
         self.bind("<Button-4>", self._on_linux_scroll)
         self.bind("<Button-5>", self._on_linux_scroll)
         self.bind_all("<MouseWheel>", self._on_mousewheel)
+
         self.bind("<Button-1>", self.handle_left_click)
         self.bind("<B1-Motion>", self.handle_drag_motion)
         self.bind("<ButtonRelease-1>", self.handle_drag_release)
         self.bind("<Button-3>", self.handle_right_click)
         self.bind("<Configure>", self._on_resize)
+
         self.draw_grid()
 
     @property
@@ -81,6 +78,14 @@ class PianoRollCanvas(tk.Canvas):
             self.top_note = new_top
             self.draw_grid()
 
+    def set_playhead(self, col):
+        self.playhead_col = col
+        self.draw_grid()
+
+    def clear_playhead(self):
+        self.playhead_col = None
+        self.draw_grid()
+
     def draw_grid(self):
         self.delete("all")
         notes_visible = self.notes_visible
@@ -102,6 +107,7 @@ class PianoRollCanvas(tk.Canvas):
                 if self.highlighted_col == col:
                     block_bg = self.mix_colors(block_bg, "#ffffff", 0.17)
                 self.create_rectangle(x1, y1, x2, y2, fill=block_bg, outline="#111", width=1)
+        # Gridlines
         grid_color = "#111"
         for vis_row in range(notes_visible + 1):
             y = vis_row * self.cell_height
@@ -110,6 +116,7 @@ class PianoRollCanvas(tk.Canvas):
             x = self.sidebar_width + col * self.cell_width
             self.create_line(x, 0, x, notes_visible * self.cell_height, fill=grid_color)
         self.create_line(self.sidebar_width, 0, self.sidebar_width, notes_visible * self.cell_height, fill="#25292c")
+        # Draw notes
         for note in self.notes_list:
             note_row = note['row']
             if self.top_note <= note_row < self.top_note + notes_visible:
@@ -119,53 +126,10 @@ class PianoRollCanvas(tk.Canvas):
                 x1 = self.sidebar_width + note['start'] * self.cell_width + 1
                 x2 = self.sidebar_width + (note['end'] + 1) * self.cell_width - 1
                 self.create_rectangle(x1, y1 + 2, x2, y2 - 2, fill="#eb42e2", outline="#222", width=2)
-
-        # --- PLAYHEAD LINE ---
-        if self.playhead_x is not None:
-            h = self.winfo_height()
-            self.create_line(
-                self.playhead_x, 0, self.playhead_x, h,
-                fill="#FFEB3B", width=2, tags="playhead"
-            )
-
-    def set_playhead(self, x_pos):
-        self.playhead_x = x_pos
-        self.draw_grid()
-
-    def clear_playhead(self):
-        self.playhead_x = None
-        self.draw_grid()
-
-    # === Smooth playhead animation ===
-    def start_playhead_animation(self, bpm, steps, on_wrap=None):
-        """Start a smoothly moving playhead based on BPM and step count."""
-        self._playhead_animating = True
-        self._playhead_start_time = time.time()
-        self._playhead_bpm = bpm
-        self._playhead_steps = steps
-        self._playhead_on_wrap = on_wrap  # optional callback when looping
-        self._anim_update()
-
-    def _anim_update(self):
-        if not getattr(self, "_playhead_animating", False):
-            return
-        elapsed = (time.time() - self._playhead_start_time)
-        step_dur_s = 60.0 / (self._playhead_bpm * 2)
-        total_len = self._playhead_steps * step_dur_s
-        t = elapsed % total_len
-        if self._playhead_on_wrap and elapsed >= total_len:
-            self._playhead_start_time = time.time()
-            self._playhead_on_wrap()
-        pos = t / total_len  # 0.0 to <1.0
-        x = self.sidebar_width + pos * (self._playhead_steps * self.cell_width)
-        self.set_playhead(x)
-        self._playhead_anim_after_id = self.after(16, self._anim_update)
-
-    def stop_playhead_animation(self):
-        self._playhead_animating = False
-        if hasattr(self, "_playhead_anim_after_id"):
-            self.after_cancel(self._playhead_anim_after_id)
-        self.clear_playhead()
+        # Draw playhead (continuous)
+        if self.playhead_col is not None:
+            x = self.sidebar_width + self.playhead_col * self.cell_width
+            self.create_line(x, 0, x, self.winfo_height(), fill="#19ffe6", width=3, tags="playhead")
 
     def is_row_playing(self, abs_row):
         for note in self.notes_list:
@@ -174,7 +138,7 @@ class PianoRollCanvas(tk.Canvas):
         return False
 
     def note_name(self, abs_row):
-        midi_note = 108 - abs_row
+        midi_note = 108 - abs_row  # 108 = C8, 21 = A0
         pitch_classes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
         pitch_class = midi_note % 12
         octave = midi_note // 12 - 1

@@ -10,18 +10,14 @@ SOUNDS_DIR = "sounds"
 STEPS = 64
 DEFAULT_BPM = 120
 
-# ---- Init pygame with typical wav parameters ----
 pygame.mixer.init(frequency=44100, size=-16, channels=2)
-
 from pydub import AudioSegment
 
-# --- Utility for mapping note number to synth file name ---
 def midi_to_note_name(midi_num):
-    # midi_num: int, 21 (A0) to 108 (C8)
     names = ['c', 'c#', 'd', 'd#', 'e', 'f', 'f#', 'g', 'g#', 'a', 'a#', 'b']
     note = names[midi_num % 12]
     octave = midi_num // 12 - 1
-    return f"{note}{octave}".lower()  # always lower
+    return f"{note}{octave}".lower()
 
 def synth_sample_path(midi_num, synth_folder="synth"):
     note_name = midi_to_note_name(midi_num)
@@ -72,13 +68,12 @@ class TrackRow:
             self.frame,
             values=["(by note)"],
             state="disabled",
-            width=10,  # Match the width of self.file_dropdown for perfect size
+            width=10,
             style="TCombobox"
         )
         self.file_placeholder.set("(by note)")
         self.file_placeholder.grid(row=0, column=2, padx=(2,2))
         self.file_placeholder.grid_remove()
-
 
         folders = self.get_folders()
         if folders:
@@ -108,9 +103,7 @@ class TrackRow:
         self.canvas.bind("<Button-1>", self.on_canvas_click)
         self.draw_grid()
 
-        self.pr_panel = None  # For PR window, if open
-
-        # Make sure PR button is correct for the default instrument on creation
+        self.pr_panel = None
         self.on_instrument_change()
 
     def get_folders(self):
@@ -131,9 +124,14 @@ class TrackRow:
 
     def on_instrument_change(self, *args):
         instrument = self.instrument_var.get()
+        folders = self.get_folders()
         if instrument == "Drum Pad":
             self.is_piano_roll = False
             self.piano_roll_button.config(state="disabled", bg="#18191b", fg="#888", cursor="X_cursor")
+            # Restore ALL folders as choices, not just synth!
+            self.folder_dropdown["values"] = folders
+            if folders and self.folder_var.get() not in folders:
+                self.folder_var.set(folders[0])
             self.folder_dropdown.grid()
             self.file_dropdown.grid()
             self.file_placeholder.grid_remove()
@@ -141,22 +139,21 @@ class TrackRow:
         else:  # "Piano Roll"
             self.is_piano_roll = True
             self.piano_roll_button.config(state="normal", bg="#25292c", fg="#fff", cursor="")
-            self.folder_dropdown.grid()
-            self.file_dropdown.grid_remove()
-            self.file_placeholder.grid()
-            # Optional: force folder to "synth" if present
-            folders = self.get_folders()
+            # Force folder to "synth" if present, restrict choices
             if "synth" in folders:
                 self.folder_var.set("synth")
                 self.folder_dropdown["values"] = ["synth"]
+            else:
+                self.folder_dropdown["values"] = folders  # fallback
+            self.folder_dropdown.grid()
+            self.file_dropdown.grid_remove()
+            self.file_placeholder.grid()
         self.draw_grid()
 
     def draw_grid(self):
         self.canvas.delete("all")
         instrument = self.instrument_var.get()
         is_muted = self.mute_var.get()
-
-        # --- Piano Roll Mode: Placeholder ---
         if instrument == "Piano Roll":
             fill_color = "#000" if is_muted else "#23262e"
             text_color = "#444" if is_muted else "#eb42e2"
@@ -170,20 +167,16 @@ class TrackRow:
                 fill=text_color, font=("Segoe UI", 12, "bold")
             )
             return
-
-        # --- Drum Pad Mode ---
         for col in range(self.steps):
             x1 = col * self.cell_width
             x2 = x1 + self.cell_width
             y1 = 0
             y2 = self.cell_height
-
             if is_muted:
                 fill = "#444" if self.grid[col] else "#000"
             else:
                 bg = "#20232b" if (col // 4) % 2 == 0 else "#23262e"
                 fill = "#19ffe6" if self.grid[col] else bg
-
             self.canvas.create_rectangle(
                 x1, y1, x2, y2,
                 fill=fill,
@@ -193,7 +186,7 @@ class TrackRow:
 
     def on_canvas_click(self, event):
         if self.instrument_var.get() == "Piano Roll":
-            return  # Can't edit drum grid in PR mode
+            return
         col = event.x // self.cell_width
         if 0 <= col < self.steps:
             self.grid[col] = 1 - self.grid[col]
@@ -221,6 +214,7 @@ class TrackRow:
     def destroy(self):
         self.frame.destroy()
 
+
 class SequencerApp:
     def __init__(self, root, parent, cell_width=20, cell_height=20):
         self.root = root
@@ -230,7 +224,6 @@ class SequencerApp:
         self.is_playing = False
         self.cell_width = cell_width
         self.cell_height = cell_height
-
         self.pr_panels = {}
 
         tk.Label(parent, text="BPM:", fg="#b6bdc2", bg="#18191b").grid(row=0, column=0, padx=2)
@@ -331,7 +324,6 @@ class SequencerApp:
         beat_duration_ms = int(60000 / bpm / 2)
 
         # --- SYNC PIANO ROLL NOTES ---
-        # Make sure we copy the latest edits from any open piano roll windows
         for row, panel in self.pr_panels.items():
             if hasattr(panel, 'pr_canvas') and panel.pr_canvas:
                 row.piano_roll_notes = [dict(n) for n in panel.pr_canvas.notes_list]
@@ -339,7 +331,6 @@ class SequencerApp:
         self.sounds = []
         self.pr_note_cache = []
         for row in self.track_rows:
-            # Only load sound for drum pad rows
             if row.is_piano_roll:
                 self.sounds.append(None)
                 self.pr_note_cache.append([dict(n) for n in row.piano_roll_notes])
@@ -356,7 +347,10 @@ class SequencerApp:
         def step(col=0):
             for row_index, row in enumerate(self.track_rows):
                 if row.is_piano_roll:
-                    notes = self.pr_note_cache[row_index]
+                    if row in self.pr_panels and hasattr(self.pr_panels[row], 'pr_canvas') and self.pr_panels[row].pr_canvas:
+                        notes = [dict(n) for n in self.pr_panels[row].pr_canvas.notes_list]
+                    else:
+                        notes = [dict(n) for n in row.piano_roll_notes]
                     for note in notes:
                         if note['start'] == col and not row.mute_var.get():
                             steps_long = note['end'] - note['start'] + 1
@@ -373,15 +367,9 @@ class SequencerApp:
                                 print(f"  Couldn't load {sample_path}: {e}")
                                 continue
                             if len(seg) > ms_long:
-                                note_sound = seg[:ms_long].fade_out(25)  # 25ms fade-out to avoid clicks
+                                note_sound = seg[:ms_long].fade_out(25)
                             else:
-                                note_sound = seg  # Full note if shorter
-
-                            buf = io.BytesIO()
-                            note_sound.export(buf, format="wav")
-                            buf.seek(0)
-                            sample = pygame.mixer.Sound(file=buf)
-                            sample.play()
+                                note_sound = seg
                             buf = io.BytesIO()
                             note_sound.export(buf, format="wav")
                             buf.seek(0)
@@ -396,9 +384,9 @@ class SequencerApp:
                         sound = self.sounds[row_index]
                         if sound:
                             sound.play()
+                # VISUAL PLAYHEAD for Piano Roll:
                 if hasattr(row, "pr_panel") and row.pr_panel and hasattr(row.pr_panel, "pr_canvas"):
-                    row.pr_panel.pr_canvas.set_playhead(col)  # You need to add this method below!
-
+                    row.pr_panel.pr_canvas.set_playhead(col)
             next_col = (col + 1) % STEPS
             self.playback_after_id = self.root.after(beat_duration_ms, lambda: step(next_col))
         step()
@@ -411,6 +399,8 @@ class SequencerApp:
             for row in self.track_rows:
                 if not row.is_piano_roll:
                     row.clear_highlight()
+                if hasattr(row, "pr_panel") and row.pr_panel and hasattr(row.pr_panel, "pr_canvas"):
+                    row.pr_panel.pr_canvas.clear_playhead()
             self.play_toggle_btn.configure(text="Play", bg="#222", fg="#19ffe6")
 
     def show_export_dialog(self):
@@ -435,7 +425,6 @@ class SequencerApp:
         beat_duration_ms = 60000 / bpm / 2
         total_duration = int(beat_duration_ms * STEPS)
         loop = AudioSegment.silent(duration=total_duration)
-
         for row in self.track_rows:
             if row.is_piano_roll or row.mute_var.get():
                 continue
@@ -448,9 +437,9 @@ class SequencerApp:
                 if row.grid[col]:
                     pos = int(col * beat_duration_ms)
                     loop = loop.overlay(sound, position=pos)
-
         loop = loop * bars
         os.makedirs("zoutputs", exist_ok=True)
         output_path = os.path.join("zoutputs", filename)
         loop.export(output_path, format="wav")
         print(f"Exported to {output_path}")
+

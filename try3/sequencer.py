@@ -321,7 +321,7 @@ class SequencerApp:
         except ValueError:
             print("Invalid BPM")
             return
-        beat_duration_ms = int(60000 / bpm / 2)
+        beat_duration_ms = float(60000 / bpm / 2)
 
         # --- SYNC PIANO ROLL NOTES ---
         for row, panel in self.pr_panels.items():
@@ -354,7 +354,7 @@ class SequencerApp:
                     for note in notes:
                         if note['start'] == col and not row.mute_var.get():
                             steps_long = note['end'] - note['start'] + 1
-                            ms_long = steps_long * beat_duration_ms
+                            ms_long = float(steps_long * beat_duration_ms)
                             midi_num = 108 - note['row']
                             folder = row.folder_var.get()
                             sample_path = synth_sample_path(midi_num, folder)
@@ -366,10 +366,8 @@ class SequencerApp:
                             except Exception as e:
                                 print(f"  Couldn't load {sample_path}: {e}")
                                 continue
-                            if len(seg) > ms_long:
-                                note_sound = seg[:ms_long].fade_out(25)
-                            else:
-                                note_sound = seg
+                            BUFFER_MS = 1000
+                            note_sound = seg[:int(ms_long + BUFFER_MS)]
                             buf = io.BytesIO()
                             note_sound.export(buf, format="wav")
                             buf.seek(0)
@@ -388,7 +386,7 @@ class SequencerApp:
                 if hasattr(row, "pr_panel") and row.pr_panel and hasattr(row.pr_panel, "pr_canvas"):
                     row.pr_panel.pr_canvas.set_playhead(col)
             next_col = (col + 1) % STEPS
-            self.playback_after_id = self.root.after(beat_duration_ms, lambda: step(next_col))
+            self.playback_after_id = self.root.after(int(beat_duration_ms), lambda: step(next_col))
         step()
 
     def stop_playback(self):
@@ -422,7 +420,7 @@ class SequencerApp:
         except ValueError:
             print("Invalid BPM")
             return
-        beat_duration_ms = 60000 / bpm / 2
+        beat_duration_ms = float(60000 / bpm / 2)
         total_duration = int(beat_duration_ms * STEPS)
         loop = AudioSegment.silent(duration=total_duration)
         for row in self.track_rows:
